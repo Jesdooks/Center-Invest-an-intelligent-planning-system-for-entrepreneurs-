@@ -4,7 +4,7 @@ import drawRoute from "./components/drawLine.js";
 import handleForm from "./components/handleForm.js";
 import generateRouteTable from "./components/generateRouteTable.js";
 import initExportButton from "./components/exportReport.js";
-import initAuth from "./components/auth.js";
+// import initAuth from "./components/auth.js";
 
 
 const searchInput = document.getElementById("manualAddress");
@@ -60,7 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   handleForm(map); // 👈 запуск логики формы
   initExportButton();
-  initAuth(); // 👈 инициализация авторизации
+  // initAuth(); // 👈 инициализация авторизации
 });
 
 const geoBtn = document.getElementById("getGeo");
