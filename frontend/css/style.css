@@ -6,6 +6,52 @@ body {
   background-color: #fff;
 }
 
+/* Стили для авторизации */
+.auth-buttons .btn {
+  font-size: 0.875rem;
+  padding: 0.375rem 0.75rem;
+}
+
+.auth-buttons .btn-outline-light:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+#userInfo {
+  font-size: 0.875rem;
+}
+
+#userInfo .btn {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+}
+
+#userInfo #userName {
+  font-weight: 600;
+}
+
+/* Адаптивность для мобильных устройств */
+@media (max-width: 768px) {
+  .auth-buttons {
+    flex-direction: column;
+    gap: 0.25rem !important;
+  }
+  
+  .auth-buttons .btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+  }
+  
+  .ai-toggle {
+    margin-top: 0.5rem;
+  }
+  
+  #userInfo {
+    flex-direction: column;
+    gap: 0.5rem !important;
+  }
+}
+
 header,
 footer {
   font-family: "Inter", sans-serif;
@@ -114,7 +160,8 @@ button[type="submit"]:hover {
 
 /* Единая высота хедера */
 .fixed-header {
-  height: 64px; /* стандартная высота — можно изменить под макет */
+  height: auto; /* Автоматическая высота */
+  min-height: 64px;
   display: flex;
   align-items: center;
 }
@@ -122,6 +169,8 @@ button[type="submit"]:hover {
 /* Чтобы внутренние элементы не ломали высоту */
 .fixed-header .container-fluid {
   height: 100%;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 @media (max-width: 991px) {
