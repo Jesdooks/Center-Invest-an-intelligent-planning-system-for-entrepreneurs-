@@ -50,6 +50,14 @@
                 </div>
             </div>
 
+            <!-- Информация о пользователе -->
+            <div id="userInfo" class="d-none me-3">
+                <div class="d-flex align-items-center gap-2">
+                    <span class="text-white">Привет, <span id="userName"></span>!</span>
+                    <button class="btn btn-outline-light btn-sm" id="logoutBtn">Выйти</button>
+                </div>
+            </div>
+
         </div>
     </header>
 
@@ -262,17 +270,10 @@
         </div>
     </div>
 
-    <!-- Индикатор пользователя -->
-    <div id="userInfo" class="d-none">
-        <div class="d-flex align-items-center gap-2 me-3">
-            <span class="text-white">Привет, <span id="userName"></span>!</span>
-            <button class="btn btn-outline-light btn-sm" id="logoutBtn">Выйти</button>
-        </div>
-    </div>
-
     <script defer src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
     <script defer type="module" src="/static/js/main.js"></script>
+    <script defer src="/static/js/components/auth-simple.js"></script>
 
 </body>
 
