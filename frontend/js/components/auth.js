@@ -1,5 +1,20 @@
 // Компонент для обработки авторизации
 export default function initAuth() {
+    console.log('🔧 initAuth вызвана');
+    
+    // Ждем, пока DOM полностью загрузится
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('🔧 DOM загружен, инициализируем авторизацию');
+            initAuthComponents();
+        });
+    } else {
+        console.log('🔧 DOM уже загружен, инициализируем авторизацию');
+        initAuthComponents();
+    }
+}
+
+function initAuthComponents() {
     const API_BASE_URL = window.location.origin;
     let currentUser = null;
 
@@ -68,8 +83,19 @@ export default function initAuth() {
 
     // Валидация номера телефона
     function validatePhone(phone) {
-        const phoneRegex = /^(\+7|7|8)?[\s\-]?\(?[489][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}$/;
-        return phoneRegex.test(phone.replace(/\s/g, ''));
+        // Убираем все пробелы, дефисы и скобки
+        const cleanPhone = phone.replace(/[\s\-\(\)]/g, '');
+        
+        // Проверяем различные форматы российских номеров
+        const patterns = [
+            /^\+7[0-9]{10}$/,           // +79188989743
+            /^8[0-9]{10}$/,             // 89188989743
+            /^7[0-9]{10}$/,             // 79188989743
+            /^\+7\s?\(?[0-9]{3}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}$/, // +7 (918) 898-97-43
+            /^8\s?\(?[0-9]{3}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}$/,   // 8 (918) 898-97-43
+        ];
+        
+        return patterns.some(pattern => pattern.test(cleanPhone));
     }
 
     // Валидация пароля
@@ -134,11 +160,14 @@ export default function initAuth() {
 
     // Обработка регистрации
     async function handleRegister() {
+        console.log('🔧 Обработка регистрации...');
         const firstName = document.getElementById('registerFirstName').value.trim();
         const lastName = document.getElementById('registerLastName').value.trim();
         const phone = document.getElementById('registerPhone').value.trim();
         const password = document.getElementById('registerPassword').value;
         const passwordConfirm = document.getElementById('registerPasswordConfirm').value;
+        
+        console.log('🔧 Данные формы:', { firstName, lastName, phone, password: '***', passwordConfirm: '***' });
 
         // Валидация
         if (!firstName || !lastName || !phone || !password || !passwordConfirm) {
@@ -202,9 +231,31 @@ export default function initAuth() {
     }
 
     // Обработчики событий
-    loginSubmit.addEventListener('click', handleLogin);
-    registerSubmit.addEventListener('click', handleRegister);
-    logoutBtn.addEventListener('click', handleLogout);
+    console.log('🔧 Инициализация авторизации...');
+    console.log('🔧 registerSubmit элемент:', registerSubmit);
+    console.log('🔧 loginSubmit элемент:', loginSubmit);
+    console.log('🔧 logoutBtn элемент:', logoutBtn);
+    
+    if (registerSubmit) {
+        registerSubmit.addEventListener('click', handleRegister);
+        console.log('✅ Обработчик регистрации добавлен');
+    } else {
+        console.error('❌ Элемент registerSubmit не найден!');
+    }
+    
+    if (loginSubmit) {
+        loginSubmit.addEventListener('click', handleLogin);
+        console.log('✅ Обработчик входа добавлен');
+    } else {
+        console.error('❌ Элемент loginSubmit не найден!');
+    }
+    
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', handleLogout);
+        console.log('✅ Обработчик выхода добавлен');
+    } else {
+        console.error('❌ Элемент logoutBtn не найден!');
+    }
 
     // Очистка ошибок при изменении полей
     loginForm.addEventListener('input', () => hideError(loginError));
