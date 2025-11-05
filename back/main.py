@@ -318,14 +318,26 @@ async def create_addresses_bulk(addresses: List[AddressCreate], db: Session = De
 # ===== ЭНДПОИНТЫ ДЛЯ ЗАГРУЗКИ ФАЙЛОВ =====
 
 @app.post("/api/upload")
-async def upload_clients_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
-    """Загрузка файла клиентов"""
+async def upload_clients_file(
+    file: UploadFile = File(...),
+    address: Optional[str] = Form(None),
+    period: Optional[str] = Form(None),
+    lat: Optional[str] = Form(None),
+    lon: Optional[str] = Form(None),
+    user_id: Optional[int] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """Загрузка файла клиентов с дополнительными параметрами"""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Файл не выбран")
     
-    # Проверяем расширение файла
-    if not file.filename.endswith(('.csv', '.json', '.xlsx')):
-        raise HTTPException(status_code=400, detail="Поддерживаются только файлы CSV, JSON и XLSX")
+    # Проверяем расширение файла (только CSV и Excel)
+    allowed_extensions = ('.csv', '.xlsx', '.xls')
+    if not file.filename.lower().endswith(allowed_extensions):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Поддерживаются только файлы: CSV (.csv), Excel (.xlsx, .xls). Получен файл: {file.filename}"
+        )
     
     # Создаем папку для загруженных файлов
     upload_dir = "uploads"
@@ -333,7 +345,7 @@ async def upload_clients_file(file: UploadFile = File(...), db: Session = Depend
     
     # Генерируем уникальное имя файла
     file_id = str(uuid.uuid4())
-    file_extension = os.path.splitext(file.filename)[1]
+    file_extension = os.path.splitext(file.filename)[1].lower()
     file_path = os.path.join(upload_dir, f"{file_id}{file_extension}")
     
     try:
@@ -343,21 +355,140 @@ async def upload_clients_file(file: UploadFile = File(...), db: Session = Depend
         
         # Обрабатываем файл в зависимости от типа
         processed_data = []
-        if file.filename.endswith('.csv'):
+        print(f"Обработка файла: {file.filename} (расширение: {file_extension})")
+        if file_extension == '.csv':
             processed_data = process_csv_file(file_path)
-        elif file.filename.endswith('.json'):
-            processed_data = process_json_file(file_path)
+            print(f"Обработано CSV строк: {len(processed_data)}")
+        elif file_extension in ('.xlsx', '.xls'):
+            processed_data = process_excel_file(file_path)
+            print(f"Обработано Excel строк: {len(processed_data)}")
+        else:
+            raise Exception(f"Неподдерживаемый формат файла: {file.filename}")
+        
+        if not processed_data:
+            raise Exception("Файл не содержит данных для обработки")
         
         # Сохраняем адреса в базу данных
         db_manager = DatabaseManager(db)
-        created_addresses = []
-        for address_data in processed_data:
+        
+        # Определяем user_id (если не указан, используем 1 как дефолтный)
+        if user_id is None:
+            user_id = 1
+        else:
             try:
-                new_address = db_manager.create_address(address_data)
-                created_addresses.append(new_address)
+                user_id = int(user_id)
+            except (ValueError, TypeError):
+                user_id = 1
+        
+        # Проверяем, существует ли пользователь
+        user = db_manager.get_user_by_id(user_id)
+        if not user:
+            # Создаем дефолтного пользователя, если его нет
+            print(f"⚠️ Пользователь с ID {user_id} не найден, создаем дефолтного пользователя")
+            try:
+                from .database_remote import User
+                # Проверяем, не существует ли уже пользователь с таким user_id
+                existing_user = db.query(User).filter(User.user_id == user_id).first()
+                if not existing_user:
+                    default_user = User(
+                        user_id=user_id,
+                        first_name="Default",
+                        last_name="User",
+                        phone_number=f"+799999999{user_id:02d}",
+                        password_hash="default"
+                    )
+                    db.add(default_user)
+                    db.commit()
+                    db.refresh(default_user)
+                    print(f"✓ Создан дефолтный пользователь с ID {user_id}")
+                else:
+                    print(f"✓ Пользователь с ID {user_id} уже существует")
             except Exception as e:
-                print(f"Ошибка создания адреса: {e}")
+                import traceback
+                print(f"⚠️ Не удалось создать дефолтного пользователя: {e}")
+                print(f"  Traceback: {traceback.format_exc()}")
+                # Если не удалось создать пользователя, пробуем использовать существующего
+                existing_users = db_manager.get_all_users()
+                if existing_users:
+                    user_id = existing_users[0].user_id
+                    print(f"⚠️ Используем существующего пользователя с ID {user_id}")
+                else:
+                    raise Exception(f"Не удалось создать или найти пользователя. Ошибка: {e}")
+        
+        # Очищаем старые адреса этого пользователя перед загрузкой новых
+        try:
+            deleted_count = db_manager.delete_addresses_by_user(user_id)
+            print(f"🗑️ Удалено старых адресов пользователя {user_id}: {deleted_count}")
+        except Exception as e:
+            print(f"⚠️ Ошибка при очистке старых адресов: {e}")
+            # Продолжаем работу, даже если не удалось очистить
+        
+        created_addresses = []
+        errors_count = 0
+        for idx, address_data in enumerate(processed_data):
+            try:
+                # Проверяем обязательные поля
+                if 'lat' not in address_data or 'lon' not in address_data:
+                    print(f"Пропущена запись {idx}: отсутствуют координаты")
+                    errors_count += 1
+                    continue
+                
+                # Убеждаемся, что address1 заполнено (обязательное поле в БД)
+                if 'address1' not in address_data or not address_data.get('address1'):
+                    address_data['address1'] = address_data.get('address', '')
+                
+                # Убеждаемся, что address заполнено
+                if 'address' not in address_data or not address_data.get('address'):
+                    address_data['address'] = address_data.get('address1', '')
+                
+                # Убеждаемся, что client_level заполнен
+                if 'client_level' not in address_data or not address_data.get('client_level'):
+                    address_data['client_level'] = 'Standart'
+                
+                # Добавляем user_id к данным адреса
+                address_data['user_id'] = user_id
+                
+                # Проверяем, что все обязательные поля присутствуют
+                required_fields = ['address', 'address1', 'lat', 'lon', 'user_id']
+                missing_fields = [f for f in required_fields if f not in address_data or address_data[f] is None]
+                if missing_fields:
+                    print(f"✗ Пропущена запись {idx}: отсутствуют обязательные поля: {missing_fields}")
+                    errors_count += 1
+                    continue
+                
+                print(f"Сохранение адреса {idx+1}/{len(processed_data)} для пользователя {user_id}: {address_data.get('address', 'N/A')}")
+                print(f"  Данные: {address_data}")
+                
+                try:
+                    new_address = db_manager.create_address(address_data)
+                    created_addresses.append(new_address)
+                    print(f"✓ Создан адрес ID={new_address.id} для пользователя {user_id}: {new_address.address}")
+                except Exception as db_error:
+                    import traceback
+                    print(f"✗ Ошибка БД при создании адреса {idx}: {db_error}")
+                    print(f"  Данные адреса: {address_data}")
+                    print(f"  Traceback: {traceback.format_exc()}")
+                    
+                    # Проверяем, возможно проблема в структуре таблицы
+                    if "user_id" in str(db_error) or "column" in str(db_error).lower() or "не существует" in str(db_error).lower():
+                        print(f"⚠️ ВОЗМОЖНО, ТАБЛИЦА addresses НЕ ИМЕЕТ КОЛОНКИ user_id!")
+                        print(f"⚠️ ВЫПОЛНИТЕ МИГРАЦИЮ: psql -U nikitaurovsky -d hack_chapmani -f back/migrate_add_user_id.sql")
+                    errors_count += 1
+                    continue
+            except Exception as e:
+                import traceback
+                print(f"✗ Общая ошибка создания адреса {idx}: {e}")
+                print(f"  Traceback: {traceback.format_exc()}")
+                errors_count += 1
                 continue
+        
+        print(f"Успешно создано адресов: {len(created_addresses)}, ошибок: {errors_count}")
+        
+        if not created_addresses:
+            error_msg = "Не удалось сохранить ни одной записи в базу данных. Проверьте формат данных и логи ошибок."
+            if errors_count > 0:
+                error_msg += " Возможно, таблица addresses не имеет колонки user_id. Выполните миграцию: psql -U nikitaurovsky -d hack_chapmani -f back/migrate_add_user_id.sql"
+            raise Exception(error_msg)
         
         # Сохраняем информацию о файле в базу данных
         file_info = {
@@ -370,15 +501,46 @@ async def upload_clients_file(file: UploadFile = File(...), db: Session = Depend
         }
         try:
             db_manager.create_uploaded_file(file_info)
+            print(f"Информация о файле сохранена: {file_id}")
         except Exception as e:
             print(f"Ошибка сохранения информации о файле: {e}")
+            # Не прерываем выполнение, если не удалось сохранить метаданные
+        
+        # Форматируем данные для отображения в таблице
+        formatted_addresses = []
+        for addr in created_addresses:
+            try:
+                # Сохраняем адреса ТОЧНО как в БД, без изменений
+                # Это гарантирует сохранение оригинальных почтовых индексов из файла
+                address_from_db = addr.address1 if addr.address1 else addr.address
+                formatted_addresses.append({
+                    "id": addr.id,
+                    "address": address_from_db,
+                    "address1": address_from_db,  # Используем один и тот же адрес
+                    "lat": float(addr.lat),
+                    "lon": float(addr.lon),
+                    "client_level": addr.client_level or "Standart",
+                    "type": "VIP" if addr.client_level and addr.client_level.lower() == "vip" else "Стандарт"
+                })
+                print(f"📋 [upload] Адрес из БД (id: {addr.id}): {address_from_db[:50]}...")
+            except Exception as e:
+                print(f"Ошибка форматирования адреса {addr.id}: {e}")
+                continue
+        
+        print(f"Форматировано адресов для отображения: {len(formatted_addresses)}")
         
         return {
             "message": "Файл успешно загружен",
             "file_id": file_id,
             "records_processed": len(created_addresses),
-            "created_addresses": created_addresses,
-            "file_info": file_info
+            "total_processed": len(processed_data),
+            "errors_count": errors_count,
+            "created_addresses": formatted_addresses,
+            "file_info": file_info,
+            "address": address,
+            "period": period,
+            "lat": float(lat) if lat else None,
+            "lon": float(lon) if lon else None
         }
         
     except Exception as e:
@@ -419,7 +581,214 @@ def process_json_file(file_path):
     except Exception as e:
         raise Exception(f"Ошибка обработки JSON: {e}")
 
+def process_excel_file(file_path):
+    """Обрабатывает Excel файл с клиентами (.xlsx, .xls)"""
+    try:
+        import pandas as pd
+        
+        # Определяем расширение файла для выбора правильного engine
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        # Читаем Excel файл с правильным engine
+        try:
+            if file_extension == '.xlsx':
+                # Для .xlsx файлов используем openpyxl engine
+                df = pd.read_excel(file_path, engine='openpyxl')
+            elif file_extension == '.xls':
+                # Для .xls файлов пробуем разные варианты
+                try:
+                    # Сначала пробуем xlrd (если установлен)
+                    df = pd.read_excel(file_path, engine='xlrd')
+                except Exception:
+                    # Если xlrd не установлен, пробуем openpyxl (может работать для некоторых .xls)
+                    try:
+                        print("Попытка чтения .xls файла через openpyxl...")
+                        df = pd.read_excel(file_path, engine='openpyxl')
+                    except Exception as e2:
+                        raise Exception(f"Не удалось прочитать .xls файл. Для .xls файлов рекомендуется установить библиотеку xlrd: pip install xlrd. Ошибка: {e2}")
+            else:
+                # По умолчанию пробуем автоматически определить
+                df = pd.read_excel(file_path, engine='openpyxl')
+        except Exception as e:
+            raise Exception(f"Не удалось прочитать Excel файл. Для .xlsx файлов нужна библиотека openpyxl, для .xls - xlrd. Установите: pip install openpyxl xlrd. Ошибка: {e}")
+        
+        print(f"Прочитано строк из Excel: {len(df)}, колонок: {len(df.columns)}")
+        print(f"Колонки в файле: {list(df.columns)}")
+        
+        processed = []
+        for i, row in df.iterrows():
+            try:
+                # Пытаемся найти нужные колонки (поддерживаем разные варианты названий)
+                address = None
+                for col in ['Адрес объекта', 'Адрес', 'address', 'address1', 'Адрес1', 'Address']:
+                    if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
+                        address = str(row[col]).strip()
+                        break
+                
+                lat = None
+                for col in ['Географическая широта', 'Широта', 'lat', 'latitude', 'Lat', 'LAT', 'Latitude']:
+                    if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
+                        try:
+                            lat = float(str(row[col]).strip())
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                lon = None
+                for col in ['Географическая долгота', 'Долгота', 'lon', 'longitude', 'Lon', 'LON', 'Longitude']:
+                    if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
+                        try:
+                            lon = float(str(row[col]).strip())
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                
+                client_level = 'Standart'
+                for col in ['Уровень клиента', 'Тип', 'client_level', 'Client Level', 'VIP', 'Уровень']:
+                    if col in row.index and pd.notna(row[col]) and str(row[col]).strip():
+                        level = str(row[col]).strip()
+                        if level.upper() in ['VIP', 'ВИП']:
+                            client_level = 'VIP'
+                        else:
+                            client_level = 'Standart'
+                        break
+                
+                # Проверяем обязательные поля
+                if not address:
+                    print(f"Пропущена строка {i+1}: отсутствует адрес")
+                    continue
+                if lat is None or lon is None:
+                    print(f"Пропущена строка {i+1}: отсутствуют координаты (lat={lat}, lon={lon})")
+                    continue
+                
+                processed.append({
+                    'address': address,
+                    'address1': address,
+                    'lat': lat,
+                    'lon': lon,
+                    'client_level': client_level
+                })
+            except Exception as e:
+                print(f"Ошибка обработки строки {i+1}: {e}")
+                continue
+        
+        if not processed:
+            raise Exception("Не удалось обработать ни одной строки из Excel файла. Проверьте формат данных и наличие колонок: Адрес, Широта, Долгота")
+        
+        print(f"Обработано строк из Excel: {len(processed)}")
+        return processed
+    except Exception as e:
+        print(f"Ошибка обработки Excel файла: {e}")
+        raise Exception(f"Ошибка обработки Excel: {e}")
+
 # ===== ЭНДПОИНТЫ ДЛЯ МАРШРУТИЗАЦИИ =====
+
+@app.get("/api/route")
+async def get_route(
+    address: Optional[str] = None,
+    period: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    user_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """Получение маршрута на основе загруженных адресов пользователя"""
+    db_manager = DatabaseManager(db)
+    
+    # Определяем user_id (по умолчанию 1)
+    if user_id is None:
+        user_id = 1
+    else:
+        try:
+            user_id = int(user_id)
+        except (ValueError, TypeError):
+            user_id = 1
+    
+    # Получаем все адреса пользователя
+    addresses = db_manager.get_addresses_by_user(user_id)
+    
+    if not addresses:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Адреса для пользователя {user_id} не найдены. Сначала загрузите файл с адресами."
+        )
+    
+    # Определяем начальную точку
+    start_lat = lat
+    start_lon = lon
+    
+    # Если координаты не указаны, пытаемся извлечь их из адреса
+    if start_lat is None or start_lon is None:
+        if address:
+            # Пытаемся извлечь координаты из строки "lat: X, lon: Y"
+            import re
+            match = re.search(r'lat:\s*([\d.]+).*lon:\s*([\d.]+)', address)
+            if match:
+                start_lat = float(match.group(1))
+                start_lon = float(match.group(2))
+        
+        # Если все еще не определены, используем первый адрес как начальную точку
+        if start_lat is None or start_lon is None:
+            if addresses:
+                start_lat = float(addresses[0].lat)
+                start_lon = float(addresses[0].lon)
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Не указаны координаты начальной точки (lat, lon) или адрес"
+                )
+    
+    # Определяем конечную точку (по умолчанию - None, чтобы не добавлять конечную точку)
+    # Если конечная точка совпадает с начальной, не добавляем её
+    end_lat = None
+    end_lon = None
+    
+    # Генерируем маршрут (AI или базовый)
+    # Используем AI алгоритм по умолчанию
+    waypoints = generate_ai_route(
+        start_lat=start_lat,
+        start_lon=start_lon,
+        client_addresses=addresses,
+        end_lat=end_lat,
+        end_lon=end_lon
+    )
+    
+    # Рассчитываем общее расстояние и время
+    total_distance = calculate_total_distance(waypoints)
+    total_time = calculate_total_time(total_distance)
+    
+    # Формируем ответ в формате, который ожидает фронтенд
+    # Преобразуем waypoints в формат для TomTom
+    tomtom_waypoints = []
+    for wp in waypoints:
+        if wp["type"] == "client":
+            tomtom_waypoints.append({
+                "lat": wp["lat"],
+                "lon": wp["lon"],
+                "address": wp["address"],
+                "level": wp.get("client_level", "Standart")
+            })
+    
+    # Генерируем упрощенный маршрут для отображения
+    # (В реальном приложении здесь нужно вызывать TomTom Routing API)
+    route_id = str(uuid.uuid4())
+    
+    # Формируем ответ в формате, который ожидает фронтенд
+    return {
+        "route_id": route_id,
+        "total_distance": total_distance,
+        "total_time": total_time,
+        "routes": [{
+            "day": 1,
+            "waypoints": waypoints,
+            "tomtom_routes": [{
+                "geometry": {
+                    "coordinates": [[wp["lon"], wp["lat"]] for wp in waypoints]
+                }
+            }]
+        }],
+        "optimized": True
+    }
 
 @app.post("/api/route", response_model=RouteResponse)
 async def get_ai_route(route_request: RouteRequest, db: Session = Depends(get_db)):
@@ -536,16 +905,21 @@ def generate_ai_route(start_lat, start_lon, client_addresses, end_lat=None, end_
         math.sqrt((x.lat - start_lat)**2 + (x.lon - start_lon)**2))
     
     # Добавляем клиентов в маршрут
+    # ВАЖНО: Используем адреса ТОЧНО из БД, без изменений
     for i, client in enumerate(sorted_clients):
+        # Берем адрес напрямую из БД (address1 или address)
+        client_address = client.address1 if client.address1 else client.address
         waypoints.append({
             "order": i + 1,
             "type": "client",
             "lat": client.lat,
             "lon": client.lon,
-            "address": client.address1,
+            "address": client_address,  # Адрес из БД
+            "address1": client_address,  # Адрес из БД (дублируем для совместимости)
             "client_id": client.id,
             "client_level": client.client_level
         })
+        print(f"📍 [generate_ai_route] Добавлен клиент (id: {client.id}): {client_address[:50]}...")
     
     # Конечная точка
     if end_lat and end_lon:
@@ -575,16 +949,21 @@ def generate_base_route(start_lat, start_lon, client_addresses, end_lat=None, en
     })
     
     # Добавляем клиентов в том порядке, как они пришли
+    # ВАЖНО: Используем адреса ТОЧНО из БД, без изменений
     for i, client in enumerate(client_addresses):
+        # Берем адрес напрямую из БД (address1 или address)
+        client_address = client.address1 if client.address1 else client.address
         waypoints.append({
             "order": i + 1,
             "type": "client",
             "lat": client.lat,
             "lon": client.lon,
-            "address": client.address1,
+            "address": client_address,  # Адрес из БД
+            "address1": client_address,  # Адрес из БД (дублируем для совместимости)
             "client_id": client.id,
             "client_level": client.client_level
         })
+        print(f"📍 [generate_base_route] Добавлен клиент (id: {client.id}): {client_address[:50]}...")
     
     # Конечная точка
     if end_lat and end_lon:
