@@ -45,7 +45,8 @@ class User(Base):
     phone_number = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
 
-    locations = relationship("Locations", back_populates="user")
+    locations = relationship("Locations", back_populates="user", cascade="all, delete-orphan")
+    addresses = relationship("Address", back_populates="user", cascade="all, delete-orphan")
 
 class Locations(Base):
     __tablename__ = "locations"
@@ -72,6 +73,7 @@ class Address(Base):
     __tablename__ = "addresses"
     
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
     address = Column(String, nullable=False)
     address1 = Column(String, nullable=False)
     lat = Column(Float, nullable=False)
@@ -79,6 +81,8 @@ class Address(Base):
     client_level = Column(String, default="Standart")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    user = relationship("User", back_populates="addresses")
 
 class ClientVisit(Base):
     __tablename__ = "client_visits"
@@ -164,11 +168,29 @@ class DatabaseManager:
         return self.db.query(Address).filter(Address.id == address_id).first()
     
     def create_address(self, address_data: dict):
-        db_address = Address(**address_data)
-        self.db.add(db_address)
-        self.db.commit()
-        self.db.refresh(db_address)
-        return db_address
+        """Создает адрес с обработкой ошибок"""
+        try:
+            # Проверяем обязательные поля
+            required_fields = ['address', 'address1', 'lat', 'lon']
+            missing_fields = [f for f in required_fields if f not in address_data or address_data[f] is None]
+            if missing_fields:
+                raise ValueError(f"Отсутствуют обязательные поля: {missing_fields}")
+            
+            # Если user_id не указан, устанавливаем дефолтное значение 1
+            if 'user_id' not in address_data or address_data.get('user_id') is None:
+                address_data['user_id'] = 1
+                print(f"⚠️ user_id не указан, используем дефолтное значение 1")
+            
+            db_address = Address(**address_data)
+            self.db.add(db_address)
+            self.db.commit()
+            self.db.refresh(db_address)
+            return db_address
+        except Exception as e:
+            self.db.rollback()
+            print(f"Ошибка создания адреса: {e}")
+            print(f"Данные адреса: {address_data}")
+            raise
     
     def update_address(self, address_id: int, address_data: dict):
         db_address = self.db.query(Address).filter(Address.id == address_id).first()
@@ -189,6 +211,24 @@ class DatabaseManager:
     
     def get_addresses_count(self):
         return self.db.query(Address).count()
+    
+    def delete_all_addresses(self):
+        """Удаляет все адреса из таблицы"""
+        count = self.db.query(Address).count()
+        self.db.query(Address).delete()
+        self.db.commit()
+        return count
+    
+    def get_addresses_by_user(self, user_id: int):
+        """Получает все адреса, принадлежащие конкретному пользователю"""
+        return self.db.query(Address).filter(Address.user_id == user_id).all()
+    
+    def delete_addresses_by_user(self, user_id: int):
+        """Удаляет все адреса, принадлежащие конкретному пользователю"""
+        count = self.db.query(Address).filter(Address.user_id == user_id).count()
+        self.db.query(Address).filter(Address.user_id == user_id).delete(synchronize_session=False)
+        self.db.commit()
+        return count
     
     def get_addresses_stats(self):
         # Статистика по уровням клиентов
